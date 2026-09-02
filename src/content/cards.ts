@@ -100,16 +100,18 @@ function isManuallyWatched(card: HTMLElement, manuallyWatchedIds: ReadonlySet<st
 }
 
 function progressRatio(card: HTMLElement): number | null {
-  const node = PROGRESS_SELECTORS.flatMap((s) =>
-    [...card.querySelectorAll<HTMLElement>(s)]
-  ).find(isVisibleProgress);
-  if (!node) return null;
+  const nodes = PROGRESS_SELECTORS.flatMap((s) => [...card.querySelectorAll<HTMLElement>(s)]);
 
-  const inlineWidth = node.style.width;
-  if (inlineWidth.endsWith("%")) {
-    const pct = Number.parseFloat(inlineWidth);
-    if (Number.isFinite(pct)) return pct / 100;
+  // Read the inline percent first. It does not need layout, so a card that is
+  // far from the viewport still reports the right ratio.
+  for (const node of nodes) {
+    if (isHiddenByStyle(node)) continue;
+    const pct = inlinePercentWidth(node);
+    if (pct !== null) return pct;
   }
+
+  const node = nodes.find(isVisibleProgress);
+  if (!node) return null;
 
   const rect = node.getBoundingClientRect();
   if (rect.width > 0) {
@@ -122,19 +124,28 @@ function progressRatio(card: HTMLElement): number | null {
   return 1;
 }
 
-function isVisibleProgress(node: HTMLElement): boolean {
+function inlinePercentWidth(node: HTMLElement): number | null {
+  const inlineWidth = node.style.width;
+  if (!inlineWidth.endsWith("%")) return null;
+  const pct = Number.parseFloat(inlineWidth);
+  if (!Number.isFinite(pct)) return null;
+  return Math.min(1, Math.max(0, pct / 100));
+}
+
+function isHiddenByStyle(node: HTMLElement): boolean {
   const style = getComputedStyle(node);
+  return style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0;
+}
+
+function isVisibleProgress(node: HTMLElement): boolean {
+  if (isHiddenByStyle(node)) return false;
+
   const rect = node.getBoundingClientRect();
-
-  if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) {
-    return false;
-  }
-
   if (rect.width > 1 && rect.height > 0) {
     return true;
   }
 
-  const width = Number.parseFloat(style.width);
+  const width = Number.parseFloat(getComputedStyle(node).width);
   return Number.isFinite(width) && width > 1;
 }
 
