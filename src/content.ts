@@ -17,8 +17,17 @@ let manuallyWatchedIdSet: ReadonlySet<string> = new Set();
 let currentUrl = location.href;
 let observer: MutationObserver | null = null;
 let filterTimer: number | undefined;
+let filterDeadline = 0;
+let viewportTimer: number | undefined;
 let syncTimer: number | undefined;
 let markTimer: number | undefined;
+
+// A short debounce keeps bursts of DOM changes cheap. The max wait makes sure a
+// long burst (for example while the user keeps scrolling) cannot delay the
+// filter forever.
+const FILTER_DEBOUNCE_MS = 120;
+const FILTER_MAX_WAIT_MS = 600;
+const VIEWPORT_FILTER_MS = 200;
 
 void start();
 
@@ -27,6 +36,7 @@ async function start(): Promise<void> {
   syncPage();
   watchNavigation();
   watchDomChanges();
+  watchViewportChanges();
 
   chrome.storage.onChanged.addListener((_changes, area) => {
     if (area !== "sync") return;
@@ -45,7 +55,7 @@ function setSettings(nextSettings: Settings): void {
 
 function syncPage(): void {
   if (!settings?.enabled) {
-    window.clearTimeout(filterTimer);
+    cancelFilter();
     removeButton();
     showHiddenCards();
     applyShortsSection(false);
@@ -60,18 +70,56 @@ function syncPage(): void {
   applyMarkButtons(scope, manuallyWatchedIdSet);
 
   if (scope && settings.activeScopes[scope]) {
-    scheduleFilter(scope);
+    scheduleFilter();
   } else {
-    window.clearTimeout(filterTimer);
+    cancelFilter();
     showHiddenCards();
   }
 }
 
-function scheduleFilter(scope: Scope): void {
+function scheduleFilter(): void {
+  const now = Date.now();
+  if (filterTimer === undefined) {
+    filterDeadline = now + FILTER_MAX_WAIT_MS;
+  }
+
+  const wait = Math.max(0, Math.min(FILTER_DEBOUNCE_MS, filterDeadline - now));
   window.clearTimeout(filterTimer);
   filterTimer = window.setTimeout(() => {
-    if (settings) hideWatchedCards(scope, settings, manuallyWatchedIdSet);
-  }, 120);
+    filterTimer = undefined;
+    runFilter();
+  }, wait);
+}
+
+function cancelFilter(): void {
+  window.clearTimeout(filterTimer);
+  filterTimer = undefined;
+  window.clearTimeout(viewportTimer);
+  viewportTimer = undefined;
+}
+
+function runFilter(): void {
+  if (!settings?.enabled) return;
+  const scope = detectScope();
+  if (!scope || !settings.activeScopes[scope]) return;
+  hideWatchedCards(scope, settings, manuallyWatchedIdSet);
+}
+
+// YouTube can add a card long before it renders its watched overlay, and an
+// off-screen card may have no measurable size. Re-check on scroll and resize so
+// cards that come into view are hidden too.
+function watchViewportChanges(): void {
+  const options: AddEventListenerOptions = { passive: true, capture: true };
+  window.addEventListener("scroll", requestViewportFilter, options);
+  window.addEventListener("resize", requestViewportFilter, options);
+}
+
+function requestViewportFilter(): void {
+  if (viewportTimer !== undefined) return;
+  viewportTimer = window.setTimeout(() => {
+    viewportTimer = undefined;
+    runFilter();
+  }, VIEWPORT_FILTER_MS);
 }
 
 function scheduleMarkButtons(scope: Scope): void {
@@ -148,7 +196,7 @@ function watchDomChanges(): void {
     if (!scope) return;
     scheduleMarkButtons(scope);
     if (settings.activeScopes[scope]) {
-      scheduleFilter(scope);
+      scheduleFilter();
     }
   });
 

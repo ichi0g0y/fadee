@@ -6,13 +6,23 @@ const WATCHED_LABELS = ["Watched", "視聴済み"];
 const CHANNEL_TAB_PATTERN =
   /^\/(?:@[^/]+|channel\/[^/]+|c\/[^/]+|user\/[^/]+)\/(videos|shorts|streams|live)(?:\/|$)/;
 
+// YouTube ships three generations of the watched overlay at the same time.
+// `ytd-` is the old one, `ytw-` is the one used on the search page, and the
+// `yt-thumbnail-overlay-progress-bar-view-model` host is the one used on the
+// feeds. Each generation needs its own selector.
 const PROGRESS_SELECTORS = [
   "ytd-thumbnail-overlay-resume-playback-renderer",
   "#progress.ytd-thumbnail-overlay-resume-playback-renderer",
+  "ytw-thumbnail-overlay-resume-playback-renderer",
+  ".ytwThumbnailOverlayResumePlaybackRendererThumbnailOverlayResumePlaybackProgress",
+  "yt-thumbnail-overlay-progress-bar-view-model",
   ".ytThumbnailOverlayProgressBarHostWatchedProgressBar",
   ".ytThumbnailOverlayProgressBarHostWatchedProgressBarSegment",
   ".ytThumbnailOverlayProgressBarHostWatchedProgressBarSegmentModern"
 ];
+
+const PROGRESS_HOST_SELECTOR =
+  ".ytThumbnailOverlayProgressBarHost,ytw-thumbnail-overlay-resume-playback-renderer,ytd-thumbnail-overlay-resume-playback-renderer";
 
 export function detectScope(): Scope | null {
   const path = location.pathname;
@@ -41,11 +51,15 @@ function getCards(scope: Scope, settings: Settings): HTMLElement[] {
   }
 
   if (scope === "search") {
+    // The search page also shows home-style shelves, so it needs the rich grid
+    // item too.
     return [
       ...document.querySelectorAll<HTMLElement>(
-        "ytd-item-section-renderer ytd-video-renderer, ytd-item-section-renderer yt-lockup-view-model"
+        "ytd-item-section-renderer ytd-video-renderer, ytd-item-section-renderer yt-lockup-view-model, ytd-rich-grid-renderer ytd-rich-item-renderer"
       )
-    ];
+    ]
+      .map(getCardRoot)
+      .filter(unique);
   }
 
   const selectors = [
@@ -100,21 +114,22 @@ function isManuallyWatched(card: HTMLElement, manuallyWatchedIds: ReadonlySet<st
 }
 
 function progressRatio(card: HTMLElement): number | null {
-  const node = PROGRESS_SELECTORS.flatMap((s) =>
-    [...card.querySelectorAll<HTMLElement>(s)]
-  ).find(isVisibleProgress);
-  if (!node) return null;
+  const nodes = PROGRESS_SELECTORS.flatMap((s) => [...card.querySelectorAll<HTMLElement>(s)]);
 
-  const inlineWidth = node.style.width;
-  if (inlineWidth.endsWith("%")) {
-    const pct = Number.parseFloat(inlineWidth);
-    if (Number.isFinite(pct)) return pct / 100;
+  // Read the inline percent first. It does not need layout, so a card that is
+  // far from the viewport still reports the right ratio.
+  for (const node of nodes) {
+    if (isHiddenByStyle(node)) continue;
+    const pct = inlinePercentWidth(node);
+    if (pct !== null) return pct;
   }
+
+  const node = nodes.find(isVisibleProgress);
+  if (!node) return null;
 
   const rect = node.getBoundingClientRect();
   if (rect.width > 0) {
-    const host =
-      node.closest<HTMLElement>(".ytThumbnailOverlayProgressBarHost") ?? node.parentElement;
+    const host = node.closest<HTMLElement>(PROGRESS_HOST_SELECTOR) ?? node.parentElement;
     const hostWidth = host?.getBoundingClientRect().width ?? 0;
     if (hostWidth > 0) return Math.min(1, rect.width / hostWidth);
   }
@@ -122,19 +137,28 @@ function progressRatio(card: HTMLElement): number | null {
   return 1;
 }
 
-function isVisibleProgress(node: HTMLElement): boolean {
+function inlinePercentWidth(node: HTMLElement): number | null {
+  const inlineWidth = node.style.width;
+  if (!inlineWidth.endsWith("%")) return null;
+  const pct = Number.parseFloat(inlineWidth);
+  if (!Number.isFinite(pct)) return null;
+  return Math.min(1, Math.max(0, pct / 100));
+}
+
+function isHiddenByStyle(node: HTMLElement): boolean {
   const style = getComputedStyle(node);
+  return style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0;
+}
+
+function isVisibleProgress(node: HTMLElement): boolean {
+  if (isHiddenByStyle(node)) return false;
+
   const rect = node.getBoundingClientRect();
-
-  if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) {
-    return false;
-  }
-
   if (rect.width > 1 && rect.height > 0) {
     return true;
   }
 
-  const width = Number.parseFloat(style.width);
+  const width = Number.parseFloat(getComputedStyle(node).width);
   return Number.isFinite(width) && width > 1;
 }
 
