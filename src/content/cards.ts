@@ -6,13 +6,23 @@ const WATCHED_LABELS = ["Watched", "視聴済み"];
 const CHANNEL_TAB_PATTERN =
   /^\/(?:@[^/]+|channel\/[^/]+|c\/[^/]+|user\/[^/]+)\/(videos|shorts|streams|live)(?:\/|$)/;
 
+// YouTube ships three generations of the watched overlay at the same time.
+// `ytd-` is the old one, `ytw-` is the one used on the search page, and the
+// `yt-thumbnail-overlay-progress-bar-view-model` host is the one used on the
+// feeds. Each generation needs its own selector.
 const PROGRESS_SELECTORS = [
   "ytd-thumbnail-overlay-resume-playback-renderer",
   "#progress.ytd-thumbnail-overlay-resume-playback-renderer",
+  "ytw-thumbnail-overlay-resume-playback-renderer",
+  ".ytwThumbnailOverlayResumePlaybackRendererThumbnailOverlayResumePlaybackProgress",
+  "yt-thumbnail-overlay-progress-bar-view-model",
   ".ytThumbnailOverlayProgressBarHostWatchedProgressBar",
   ".ytThumbnailOverlayProgressBarHostWatchedProgressBarSegment",
   ".ytThumbnailOverlayProgressBarHostWatchedProgressBarSegmentModern"
 ];
+
+const PROGRESS_HOST_SELECTOR =
+  ".ytThumbnailOverlayProgressBarHost,ytw-thumbnail-overlay-resume-playback-renderer,ytd-thumbnail-overlay-resume-playback-renderer";
 
 export function detectScope(): Scope | null {
   const path = location.pathname;
@@ -41,11 +51,15 @@ function getCards(scope: Scope, settings: Settings): HTMLElement[] {
   }
 
   if (scope === "search") {
+    // The search page also shows home-style shelves, so it needs the rich grid
+    // item too.
     return [
       ...document.querySelectorAll<HTMLElement>(
-        "ytd-item-section-renderer ytd-video-renderer, ytd-item-section-renderer yt-lockup-view-model"
+        "ytd-item-section-renderer ytd-video-renderer, ytd-item-section-renderer yt-lockup-view-model, ytd-rich-grid-renderer ytd-rich-item-renderer"
       )
-    ];
+    ]
+      .map(getCardRoot)
+      .filter(unique);
   }
 
   const selectors = [
@@ -115,8 +129,7 @@ function progressRatio(card: HTMLElement): number | null {
 
   const rect = node.getBoundingClientRect();
   if (rect.width > 0) {
-    const host =
-      node.closest<HTMLElement>(".ytThumbnailOverlayProgressBarHost") ?? node.parentElement;
+    const host = node.closest<HTMLElement>(PROGRESS_HOST_SELECTOR) ?? node.parentElement;
     const hostWidth = host?.getBoundingClientRect().width ?? 0;
     if (hostWidth > 0) return Math.min(1, rect.width / hostWidth);
   }
